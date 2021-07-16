@@ -31,14 +31,11 @@ show_help()
   cat <<HELP
 usage: mingw-w64-build [OPTION]... ARCH...
 Build the MinGW-w64 toolchain for ARCH(s) (i686 or x86_64).
-
   -h, --help         display this help and exit
   --version          output version information and exit
   --enable-pthreads  enable pthreads via winpthreads
-
 Creates directories 'src' and 'bld' in the current directory and
   removes them when complete.
-
 examples:
   mingw-w64-build i686
   mingw-w64-build x86_64
@@ -225,6 +222,88 @@ $enable_threads 2>>"$log" || ( rm -rf "$bld/gcc"; error_exit )
   return 0
 }
 
+install_depends()
+{
+## "gcc-gnat"
+## "texinfo"
+  local bin_x64=(
+    "gcc"
+    "gcc-c++"
+    "libgcc"
+    "bison"
+    "flex"
+  )
+
+## "libgcc"
+  local bin_x32=()
+	
+## "glibc"
+## "zlib"
+  local devel_x64=()
+
+## "glibc"
+  local devel_x32=()
+	
+  for url in "${bin_x64[@]}"; do
+    echo "yum install -y $url.x86_64" >&1
+    yum install -y "$url.x86_64" 2>>"$log" || error_exit
+  done
+
+  for url in "${bin_x32[@]}"; do
+    echo "yum install -y $url.i686" >&1
+    yum install -y "$url.i686" 2>>"$log" || error_exit
+  done
+
+  for url in "${devel_x64[@]}"; do
+    echo "yum install -y $url-devel.x86_64" >&1
+    yum install -y "$url-devel.x86_64" 2>>"$log" || error_exit
+  done
+
+  for url in "${devel_x32[@]}"; do
+    echo "yum install -y $url-devel.i686" >&1
+    yum install -y "$url-devel.i686" 2>>"$log" || error_exit
+  done
+}
+
+check_progs()
+{
+  local _missing_progs="$1"
+  if [ -z "%_missing_progs" ]; then
+    echo "mingw-w64-build: missing required program(s): $_missing_progs" >&2
+    exit 1
+  fi
+  local progs=(
+    "curl"
+    "gzip"
+    "bzip2"
+    "git"
+    "make"
+    "g++"
+    "tr"
+    "tar"
+    "svn"
+    "flex"
+    "bison"
+    "makeinfo"
+  )
+  missing_progs=""
+  for prog in "${progs[@]}"; do
+    if ! command -v $prog >/dev/null; then
+      missing_progs="$prog $missing_progs"
+    fi
+  done
+  if [[ -n "$missing_progs" ]]; then
+    echo "mingw-w64-build: missing required program(s): $missing_progs" >&2
+    if command -v yum >/dev/null; then
+      echo "yum install -y gzip bzip2 git make flex bison" >&1
+      "yum install -y gzip bzip2 git make flex bison" 2>>"$log" || error_exit
+      check_progs "$missing_progs" || exit 1
+    else
+      exit 1
+    fi
+  fi
+}
+
 while :; do
   case $1 in
     -h|--help)
@@ -267,108 +346,24 @@ for arch in $@; do
   fi
 done
 
-install_depends()
-{
-	local bin_x64=(
-		"gcc"
-		"gcc-c++"
-		"gcc-gnat"
-		"libgcc"
-		"bison"
-		"flex"
-		"texinfo"
-	)
-	
-	local bin_x32=(
-		"libgcc"
-	)
-	
-	local devel_x64=(
-		"glibc"
-		"zlib"
-	)
-	
-	local devel_x32=(
-		"glibc"
-	)
-	
-	for url in "${bin_x64[@]}"; do
-		echo "yum install -y $url.x86_64" >&1
-		"yum install -y $url.x86_64" 2>>"$log" || error_exit
-	done
-
-	for url in "${bin_x32[@]}"; do
-		echo "yum install -y $url.i686" >&1
-		"yum install -y $url.i686" 2>>"$log" || error_exit
-	done
-
-	for url in "${devel_x64[@]}"; do
-		echo "yum install -y $url-devel.x86_64" >&1
-		"yum install -y $url-devel.x86_64" 2>>"$log" || error_exit
-	done
-
-	for url in "${devel_x32[@]}"; do
-		echo "yum install -y $url-devel.i686" >&1
-		"yum install -y $url-devel.i686" 2>>"$log" || error_exit
-	done
-}
-
-check_progs()
-{
-  local _missing_progs="$1"
-  if [[ "%_missing_progs" != "" ]]; then
-    echo "mingw-w64-build: missing required program(s): $_missing_progs" >&2
-    exit 1
-  fi
-  local progs=(
-    "curl"
-    "gzip"
-    "bzip2"
-    "git"
-    "make"
-    "g++"
-    "tr"
-    "tar"
-    "svn"
-    "flex"
-    "bison"
-    "makeinfo"
-  )
-  missing_progs=""
-  for prog in "${progs[@]}"; do
-    if ! command -v $prog >/dev/null; then
-      missing_progs="$prog $missing_progs"
-    fi
-  done
-  if [[ -n "$missing_progs" ]]; then
-    echo "mingw-w64-build: missing required program(s): $missing_progs" >&2
-    if command -v yum >/dev/null; then
-      echo "yum install -y gzip bzip2 git make flex bison" >&1
-      "yum install -y gzip bzip2 git make flex bison" 2>>"$log" || error_exit
-      check_progs "$missing_progs" || exit 1
-    else
-      exit 1
-    fi
-  fi
-}
-
 # local os=`/etc/os-release | grep ID= |awk -F'"' '{print $2}'|xargs`
 cpus=$(grep -c processor /proc/cpuinfo 2>/dev/null || sysctl -n hw.ncpu | tr -d "\n" 2>/dev/null)
 (( cpus += 2 ))
 build=$(curl -s "http://git.savannah.gnu.org/gitweb/?p=config.git;a=blob_plain;f=config.guess;hb=HEAD" | sh)
-sd="/usr/local"
+sd="/usr/local/mingw-w64"
 wd="$PWD"
 src="$wd/src"
 bld="$wd/bld"
-log="$wd/bld/build.log"
+log="$wd/build.log"
+
+rm -f "$log"
+mkdir -p "$bld" "$src"
 
 if command -v yum >/dev/null; then
-  install_depends
+  install_depends 3>&1 1>>"$log" 2>&1
 fi
-check_progs ""
+check_progs
 
-rm -f "$log"# "$src" "$bld"
-mkdir -p "$bld" "$src"
 download_sources 3>&1 1>>"$log" 2>&1
 
 for arch in $@; do
