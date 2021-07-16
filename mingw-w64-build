@@ -23,7 +23,8 @@ v_gcc="10git"
 v_gmp="6.2.1"
 v_mpfr="4.1.0"
 v_mpc="1.2.1"
-v_isl="0.23"
+# v_isl="0.23"
+v_isl="0.19"
 
 show_help()
 {
@@ -74,8 +75,10 @@ clean_build()
 {
   local build_dir="$1"
 
-  rm -fr "$build_dir"
-  mkdir -p "$build_dir"
+  if [ ! -d "$build_dir" ]; then
+    # rm -fr "$build_dir"
+    mkdir -p "$build_dir"
+  fi
   cd "$build_dir" || error_exit
 }
 
@@ -83,14 +86,20 @@ download_sources()
 {
   cd "$src" || error_exit
 
-  echo "downloading mingw-w64" >&3
-  git clone --depth 1 -b v8.x https://git.code.sf.net/p/mingw-w64/mingw-w64 mingw-w64-$v_mingww64 || error_exit
+  if [ ! -d "mingw-w64-$v_mingww64" ]; then
+    echo "downloading mingw-w64" >&3
+    git clone --depth 1 -b v8.x https://git.code.sf.net/p/mingw-w64/mingw-w64 mingw-w64-$v_mingww64 || ( rm -rf "mingw-w64-$v_mingww64"; error_exit )
+  fi
 
-  echo "downloading binutils" >&3
-  git clone --depth 1 -b binutils-2_35-branch git://sourceware.org/git/binutils-gdb.git binutils-$v_binutils || error_exit
-
-  echo "downloading gcc" >&3
-  git clone --depth 1 -b releases/gcc-10 git://gcc.gnu.org/git/gcc.git gcc-$v_gcc || error_exit
+  if [ ! -d "binutils-$v_binutils" ]; then
+    echo "downloading binutils" >&3
+    git clone --depth 1 -b binutils-2_35-branch git://sourceware.org/git/binutils-gdb.git binutils-$v_binutils || ( rm -rf "binutils-$v_binutils"; error_exit )
+  fi
+  
+  if [ ! -d "gcc-$v_gcc" ]; then
+    echo "downloading gcc" >&3
+    git clone --depth 1 -b releases/gcc-10 git://gcc.gnu.org/git/gcc.git gcc-$v_gcc || ( rm -rf "gcc-$v_gcc"; error_exit )
+  fi
 
   local urls=(
     "https://ftp.gnu.org/gnu/gmp/gmp-$v_gmp.tar.xz"
@@ -101,24 +110,28 @@ download_sources()
 
   for url in "${urls[@]}"; do
     local archive="${url##*/}"
-    echo "downloading $archive" >&3
-    curl -O "$url" || error_exit
-    echo "extracting $archive" >&3
-    tar -xf "$archive" || error_exit
+    if [ ! -f "$archive" ]; then
+      echo "downloading $archive" >&3
+      curl -O "$url" || ( rm -f "$archive"; error_exit )
+    fi
+    if [ ! -d "${archive%%.*}" ]; then
+      echo "extracting $archive" >&3
+      tar -xf "$archive" || ( rm -rf "${archive%%.*}"; error_exit )
+    fi
   done
 
   cd "$src/gcc-$v_gcc" || error_exit
 
-  ln -s "../gmp-$v_gmp" "gmp"
-  ln -s "../mpfr-$v_mpfr" "mpfr"
-  ln -s "../mpc-$v_mpc" "mpc"
-  ln -s "../isl-$v_isl" "isl"
+  ln -snf "../gmp-$v_gmp" "gmp"
+  ln -snf "../mpfr-$v_mpfr" "mpfr"
+  ln -snf "../mpc-$v_mpc" "mpc"
+  ln -snf "../isl-$v_isl" "isl"
 }
 
 build_toolchain()
 {
   local host="$1-w64-mingw32"
-  local prefix="$wd/$host"
+  local prefix="$sd/$host"
   export PATH="$prefix/bin:$PATH"
 
   if [[ "$1" = "i686" ]]; then
@@ -133,58 +146,81 @@ build_toolchain()
 
   clean_build "$bld/binutils"
   echo "configuring binutils" >&3
-  "../../src/binutils-$v_binutils/configure" --prefix="$prefix" --disable-shared \
-    --enable-static --with-sysroot="$prefix" --target="$host" \
-    --disable-multilib --disable-nls --enable-lto --disable-werror || error_exit
+  "../../src/binutils-$v_binutils/configure" \
+--prefix="$prefix" \
+--target="$host" \
+--with-sysroot="$prefix" \
+--disable-shared \
+--enable-static \
+--disable-multilib \
+--disable-nls \
+--enable-lto \
+--disable-werror 2>>"$log" || ( rm -rf "$bld/binutils"; error_exit )
   echo "building binutils" >&3
-  make -j $cpus || error_exit
+  make -j$cpus 2>>"$log" || ( rm -rf "$bld/binutils"; error_exit )
   echo "installing binutils" >&3
-  make install || error_exit
+  make install 2>>"$log" || ( rm -rf "$bld/binutils"; error_exit )
 
   clean_build "$bld/mingw-w64"
   echo "configuring mingw-w64-headers" >&3
-  "../../src/mingw-w64-$v_mingww64/mingw-w64-headers/configure" --build="$build" \
-    --host="$host" --prefix="$prefix/$host" || error_exit
+  "../../src/mingw-w64-$v_mingww64/mingw-w64-headers/configure" \
+--prefix="$prefix/$host" \
+--build="$build" \
+--host="$host" 2>>"$log" || ( rm -rf "$bld/mingw-w64"; error_exit )
   echo "installing mingw-w64-headers" >&3
-  make install || error_exit
+  make install 2>>"$log" || ( rm -rf "$bld/mingw-w64"; error_exit )
   cd "$prefix" || error_exit
-  ln -s "./$host" "./mingw" || error_exit
+  ln -snf "./$host" "./mingw" || error_exit
 
   clean_build "$bld/gcc"
   echo "configuring gcc" >&3
-  "../../src/gcc-$v_gcc/configure" --target="$host" --disable-shared \
-    --enable-static --disable-multilib --prefix="$prefix" $i686_dwarf2 \
-    --enable-languages=c,c++ --disable-nls $enable_threads || error_exit
+  "../../src/gcc-$v_gcc/configure" \
+--prefix="$prefix" \
+--target="$host" \
+--disable-shared \
+--enable-static \
+--disable-multilib \
+$i686_dwarf2 \
+--enable-languages=c,c++ \
+--disable-nls \
+$enable_threads 2>>"$log" || ( rm -rf "$bld/gcc"; error_exit )
   echo "running 'make-gcc' for gcc" >&3
-  make -j $cpus all-gcc || error_exit
+  make -j$cpus all-gcc 2>>"$log" || ( rm -rf "$bld/gcc"; error_exit )
   echo "running 'install-gcc' for gcc" >&3
-  make install-gcc || error_exit
+  make install-gcc 2>>"$log" || ( rm -rf "$bld/gcc"; error_exit )
 
   clean_build "$bld/mingw-w64"
   echo "configuring mingw-w64-crt" >&3
-  "../../src/mingw-w64-$v_mingww64/mingw-w64-crt/configure" --build="$build" --host="$host" \
-    --prefix="$prefix/$host" --with-sysroot="$prefix/$host" || error_exit
+  "../../src/mingw-w64-$v_mingww64/mingw-w64-crt/configure" \
+--prefix="$prefix/$host" \
+--build="$build" \
+--host="$host" \
+--with-sysroot="$prefix/$host" 2>>"$log" || ( rm -rf "$bld/mingw-w64"; error_exit )
   echo "building mingw-w64-crt" >&3
-  make -j $cpus || error_exit
+  make -j$cpus 2>>"$log" || ( rm -rf "$bld/mingw-w64"; error_exit )
   echo "installing mingw-w64-crt" >&3
-  make install || error_exit
+  make install 2>>"$log" || ( rm -rf "$bld/mingw-w64"; error_exit )
 
   if [[ "$pthreads" = true ]]; then
     clean_build "$bld/winpthreads"
     echo "configuring winpthreads" >&3
-    "../../src/mingw-w64-$v_mingww64/mingw-w64-libraries/winpthreads/configure" --build="$build" \
-      --host="$host" --disable-shared --enable-static --prefix="$prefix/$host" || error_exit
+    "../../src/mingw-w64-$v_mingww64/mingw-w64-libraries/winpthreads/configure" \
+--prefix="$prefix/$host" \
+--build="$build" \
+--host="$host" \
+--disable-shared \
+--enable-static 2>>"$log" || ( rm -rf "$bld/winpthreads"; error_exit )
     echo "building winpthreads" >&3
-    make -j $cpus || error_exit
+    make -j$cpus 2>>"$log" || ( rm -rf "$bld/winpthreads"; error_exit )
     echo "installing winpthreads" >&3
-    make install || error_exit
+    make install 2>>"$log" || ( rm -rf "$bld/winpthreads"; error_exit )
   fi
 
   cd "$bld/gcc" || error_exit
   echo "building gcc" >&3
-  make -j $cpus || error_exit
+  make -j$cpus 2>>"$log" || ( rm -rf "$bld/gcc"; error_exit )
   echo "installing gcc" >&3
-  make install || error_exit
+  make install 2>>"$log" || ( rm -rf "$bld/gcc"; error_exit )
 
   return 0
 }
@@ -231,41 +267,108 @@ for arch in $@; do
   fi
 done
 
-progs=(
-  "curl"
-  "gzip"
-  "bzip2"
-  "git"
-  "make"
-  "g++"
-  "tr"
-  "tar"
-  "svn"
-  "flex"
-  "bison"
-  "makeinfo"
-)
-missing_progs=""
-for prog in "${progs[@]}"; do
-  if ! command -v $prog >/dev/null; then
-    missing_progs="$prog $missing_progs"
-  fi
-done
-if [[ -n "$missing_progs" ]]; then
-  echo "mingw-w64-build: missing required program(s): $missing_progs" >&2
-  exit 1
-fi
+install_depends()
+{
+	local bin_x64=(
+		"gcc"
+		"gcc-c++"
+		"gcc-gnat"
+		"libgcc"
+		"bison"
+		"flex"
+		"texinfo"
+	)
+	
+	local bin_x32=(
+		"libgcc"
+	)
+	
+	local devel_x64=(
+		"glibc"
+		"zlib"
+	)
+	
+	local devel_x32=(
+		"glibc"
+	)
+	
+	for url in "${bin_x64[@]}"; do
+		echo "yum install -y $url.x86_64" >&1
+		"yum install -y $url.x86_64" 2>>"$log" || error_exit
+	done
 
+	for url in "${bin_x32[@]}"; do
+		echo "yum install -y $url.i686" >&1
+		"yum install -y $url.i686" 2>>"$log" || error_exit
+	done
+
+	for url in "${devel_x64[@]}"; do
+		echo "yum install -y $url-devel.x86_64" >&1
+		"yum install -y $url-devel.x86_64" 2>>"$log" || error_exit
+	done
+
+	for url in "${devel_x32[@]}"; do
+		echo "yum install -y $url-devel.i686" >&1
+		"yum install -y $url-devel.i686" 2>>"$log" || error_exit
+	done
+}
+
+check_progs()
+{
+  local _missing_progs="$1"
+  if [[ "%_missing_progs" != "" ]]; then
+    echo "mingw-w64-build: missing required program(s): $_missing_progs" >&2
+    exit 1
+  fi
+  local progs=(
+    "curl"
+    "gzip"
+    "bzip2"
+    "git"
+    "make"
+    "g++"
+    "tr"
+    "tar"
+    "svn"
+    "flex"
+    "bison"
+    "makeinfo"
+  )
+  missing_progs=""
+  for prog in "${progs[@]}"; do
+    if ! command -v $prog >/dev/null; then
+      missing_progs="$prog $missing_progs"
+    fi
+  done
+  if [[ -n "$missing_progs" ]]; then
+    echo "mingw-w64-build: missing required program(s): $missing_progs" >&2
+    if command -v yum >/dev/null; then
+      echo "yum install -y gzip bzip2 git make flex bison" >&1
+      "yum install -y gzip bzip2 git make flex bison" 2>>"$log" || error_exit
+      check_progs "$missing_progs" || exit 1
+    else
+      exit 1
+    fi
+  fi
+}
+
+# local os=`/etc/os-release | grep ID= |awk -F'"' '{print $2}'|xargs`
 cpus=$(grep -c processor /proc/cpuinfo 2>/dev/null || sysctl -n hw.ncpu | tr -d "\n" 2>/dev/null)
 (( cpus += 2 ))
 build=$(curl -s "http://git.savannah.gnu.org/gitweb/?p=config.git;a=blob_plain;f=config.guess;hb=HEAD" | sh)
+sd="/usr/local"
 wd="$PWD"
 src="$wd/src"
 bld="$wd/bld"
 log="$wd/bld/build.log"
 
-rm -fr "$log" "$src" "$bld"
-mkdir "$bld" "$src"
+if command -v yum >/dev/null; then
+  install_depends
+fi
+check_progs ""
+
+rm -f "$log"# "$src" "$bld"
+mkdir -p "$bld" "$src"
 download_sources 3>&1 1>>"$log" 2>&1
 
 for arch in $@; do
